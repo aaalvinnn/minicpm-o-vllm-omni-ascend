@@ -239,7 +239,13 @@ class OmniOpenAIServingChat(OpenAIServingChat, AudioMixin):
 
             model_stage = self._stage_get(engine_args, "model_stage")
             if model_stage == "llm":
-                sp.output_kind = RequestOutputKind.FINAL_ONLY
+                # OPT(ttft-text-streaming): stream thinker text to the client
+                # per token so TTFT drops from ~350ms to the engine's native
+                # first-token latency. The llm->talker boundary still receives
+                # a single update because OpenAI chat requests are
+                # non-resumable (streaming.enabled=False) and _route_output
+                # forwards to the next stage only on finish.
+                sp.output_kind = RequestOutputKind.DELTA
             elif model_stage == "tts":
                 sp.output_kind = RequestOutputKind.DELTA
         return sampling_params_list
