@@ -107,7 +107,15 @@ def _patched_estimator_step(
 ):
     assert _original_estimator_step is not None
     graph_runner = _backend_graph_runners.get(self)
-    if graph_runner is None or self._trt_stepper is not None or self._cfm_graph_wrapper is not None:
+    # NOTE: adapted for our 0.25 tree — upstream's newer BatchedToken2Wav
+    # carries `_trt_stepper` / `_cfm_graph_wrapper` backends which do not exist
+    # here; getattr defaults keep the guard equivalent (None == no TRT/graph
+    # wrapper backend).
+    if (
+        graph_runner is None
+        or getattr(self, "_trt_stepper", None) is not None
+        or getattr(self, "_cfm_graph_wrapper", None) is not None
+    ):
         return _original_estimator_step(
             self,
             estimator,
