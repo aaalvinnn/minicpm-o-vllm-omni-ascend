@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -24,6 +25,60 @@ _original_decode_batch = None
 _backend_graph_runners: WeakKeyDictionary[object, NPUExactGraphRunner] = WeakKeyDictionary()
 _ENABLE_KEY = "code2wav_enable_npu_graph"
 _MAX_GRAPHS_KEY = "code2wav_max_npu_graphs"
+# --- exp/static-freqs: CPU 小常量 H2D 缓存（timestep freqs） ---
+_static_freqs_patched = False
+_freqs_cache: dict[tuple[object, ...], torch.Tensor] = {}
+
+
+def _patched_timestep_embedding(t, dim, max_period=10000):
+    """freqs 只依赖 (dim, max_period)，缓存后消除每 chunk×step 的 CPU 生成 + H2D + 同步。
+
+    数值一致性：CPU 上按原始公式/dtype 计算 → 一次性 .to(t)（保持原 dtype/device 跟随语义）
+    → 按 (dim, max_period, device, dtype) 缓存。缓存键含 dtype/device，切换时自动重缓存。
+    不用 register_buffer：浮点 buffer 会随 module.half()/bfloat16() 转换。
+    """
+    key = (dim, max_period, t.device, t.dtype)
+    freqs = _freqs_cache.get(key)
+    if freqs is None:
+        half = dim // 2
+        freqs_cpu = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=half) / half
+        )
+        freqs = freqs_cpu.to(t)  # 原语义：同时匹配 device 和 dtype
+        _freqs_cache[key] = freqs
+    args = t[:, None] * freqs[None]
+    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    if dim % 2:
+        embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+    return embedding
+
+
+def _static_patch_timestep_embedding(estimator) -> None:
+    """惰性替换 TimestepEmbedder.timestep_embedding 为 freqs 缓存版（只做一次）。
+
+    从实际加载的模型实例取 class（不硬编码 cosyvoice2/stepaudio2.cosyvoice2 包路径）。
+    失败必须显式报错，禁止静默回退。
+    """
+    global _static_freqs_patched
+    if _static_freqs_patched:
+        return
+    t_embedder = getattr(estimator, "t_embedder", None)
+    if t_embedder is None:
+        raise RuntimeError(
+            "[static-freqs] estimator has no t_embedder attribute; cannot apply timestep freqs cache"
+        )
+    cls = type(t_embedder)
+    if not hasattr(cls, "timestep_embedding"):
+        raise RuntimeError(
+            f"[static-freqs] {cls.__module__}.{cls.__name__} has no timestep_embedding; cannot patch"
+        )
+    cls.timestep_embedding = staticmethod(_patched_timestep_embedding)  # type: ignore[method-assign]
+    _static_freqs_patched = True
+    logger.info(
+        "[static-freqs] enabled: freqs cache installed on %s.%s (timestep embedding)",
+        cls.__module__,
+        cls.__name__,
+    )
 
 
 def _config_bool(value: object, default: bool) -> bool:
@@ -107,6 +162,9 @@ def _patched_estimator_step(
 ):
     assert _original_estimator_step is not None
     graph_runner = _backend_graph_runners.get(self)
+    # exp/static-freqs: 首次 estimator 调用即安装 freqs 缓存（此时 t_embedder 实例可用；
+    # warmup/首次请求完成缓存填充，之后 graph capture 不再创建新张量）。
+    _static_patch_timestep_embedding(estimator)
     # NOTE: adapted for our 0.25 tree — upstream's newer BatchedToken2Wav
     # carries `_trt_stepper` / `_cfm_graph_wrapper` backends which do not exist
     # here; getattr defaults keep the guard equivalent (None == no TRT/graph
