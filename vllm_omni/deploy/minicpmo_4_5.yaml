@@ -100,7 +100,9 @@ platforms:
       - stage_id: 1
         max_num_batched_tokens: 8192
         compilation_config:
-          cudagraph_mode: PIECEWISE
+          # exp/fdo-stage1: PIECEWISE -> FULL_DECODE_ONLY (PIECEWISE is
+          # neutralized by VLLM_USE_BREAKABLE_CUDAGRAPH=False -> eager).
+          cudagraph_mode: FULL_DECODE_ONLY
       - stage_id: 2
         # Stage 2 stays outer-eager and captures only exact-shape CFM DiT
         # estimator kernels through the NPU platform patch.
