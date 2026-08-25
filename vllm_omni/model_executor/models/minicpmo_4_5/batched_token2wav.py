@@ -248,57 +248,94 @@ class BatchedToken2Wav(nn.Module):
         )
         timeline = 1 - torch.cos(timeline * 0.5 * torch.pi)
         time = timeline[0].expand(batch_size)
-        mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=0)
-        speakers_cfg = torch.cat((speakers, torch.zeros_like(speakers)), dim=0)
-        cond_cfg = torch.cat((cond, torch.zeros_like(cond)), dim=0)
         next_cnn: list[torch.Tensor] = []
         next_att: list[torch.Tensor] = []
         dt = timeline[1] - timeline[0]
-        for step in range(self.n_timesteps):
-            old_cnn = cnn_cache[step] if cnn_cache is not None else None
-            old_att = att_cache[step] if att_cache is not None else None
-            estimate, step_cnn, step_att = self._estimator_step(
-                estimator,
-                x=torch.cat((x, x), dim=0),
-                mu=mu_cfg,
-                time=torch.cat((time, time), dim=0),
-                speakers=speakers_cfg,
-                cond=cond_cfg,
-                cnn_cache=old_cnn,
-                att_cache=old_att,
-            )
-            conditional, unconditional = estimate.split(batch_size, dim=0)
-            velocity = (1.0 + decoder.inference_cfg_rate) * conditional - decoder.inference_cfg_rate * unconditional
-            x = x + dt * velocity
-            time = time + dt
-            if step + 1 < self.n_timesteps:
-                dt = timeline[step + 2] - time[0]
-            next_cnn.append(step_cnn)
-            next_att.append(step_att)
+        # exp/cfg-single-branch (arm C): inference_cfg_rate == 0.0 disables CFG
+        # entirely — the velocity formula collapses to the conditional estimate
+        # (``(1+0)*conditional - 0*unconditional``), so the unconditional
+        # half-batch is elided instead of being computed and discarded. The
+        # dual-branch path stays intact for any non-zero rate.
+        if decoder.inference_cfg_rate == 0.0:
+            for step in range(self.n_timesteps):
+                old_cnn = cnn_cache[step] if cnn_cache is not None else None
+                old_att = att_cache[step] if att_cache is not None else None
+                estimate, step_cnn, step_att = self._estimator_step(
+                    estimator,
+                    x=x,
+                    mu=mu,
+                    time=time,
+                    speakers=speakers,
+                    cond=cond,
+                    cnn_cache=old_cnn,
+                    att_cache=old_att,
+                )
+                x = x + dt * estimate
+                time = time + dt
+                if step + 1 < self.n_timesteps:
+                    dt = timeline[step + 2] - time[0]
+                next_cnn.append(step_cnn)
+                next_att.append(step_att)
+        else:
+            mu_cfg = torch.cat((mu, torch.zeros_like(mu)), dim=0)
+            speakers_cfg = torch.cat((speakers, torch.zeros_like(speakers)), dim=0)
+            cond_cfg = torch.cat((cond, torch.zeros_like(cond)), dim=0)
+            for step in range(self.n_timesteps):
+                old_cnn = cnn_cache[step] if cnn_cache is not None else None
+                old_att = att_cache[step] if att_cache is not None else None
+                estimate, step_cnn, step_att = self._estimator_step(
+                    estimator,
+                    x=torch.cat((x, x), dim=0),
+                    mu=mu_cfg,
+                    time=torch.cat((time, time), dim=0),
+                    speakers=speakers_cfg,
+                    cond=cond_cfg,
+                    cnn_cache=old_cnn,
+                    att_cache=old_att,
+                )
+                conditional, unconditional = estimate.split(batch_size, dim=0)
+                velocity = (1.0 + decoder.inference_cfg_rate) * conditional - decoder.inference_cfg_rate * unconditional
+                x = x + dt * velocity
+                time = time + dt
+                if step + 1 < self.n_timesteps:
+                    dt = timeline[step + 2] - time[0]
+                next_cnn.append(step_cnn)
+                next_att.append(step_att)
         return x, torch.stack(next_cnn), torch.stack(next_att)
 
     @staticmethod
     def _split_flow_cache(cache: dict[str, torch.Tensor], batch_size: int) -> list[dict[str, torch.Tensor]]:
         result: list[dict[str, torch.Tensor]] = []
+        # Dual-branch (CFG) estimator caches carry conditional+unconditional
+        # rows (dim 2 == 2*batch_size); single-branch (CFG disabled) caches
+        # carry one row per request (dim 2 == batch_size).
+        estimator_cnn = cache["estimator_cnn_cache"]
+        dual = estimator_cnn.shape[2] >= 2 * batch_size
         for row in range(batch_size):
+            if dual:
+                estimator_cnn_row = torch.cat(
+                    (
+                        estimator_cnn[:, :, row : row + 1],
+                        estimator_cnn[:, :, batch_size + row : batch_size + row + 1],
+                    ),
+                    dim=2,
+                ).detach()
+                estimator_att_row = torch.cat(
+                    (
+                        cache["estimator_att_cache"][:, :, row : row + 1],
+                        cache["estimator_att_cache"][:, :, batch_size + row : batch_size + row + 1],
+                    ),
+                    dim=2,
+                ).detach()
+            else:
+                estimator_cnn_row = estimator_cnn[:, :, row : row + 1].detach()
+                estimator_att_row = cache["estimator_att_cache"][:, :, row : row + 1].detach()
             result.append(
                 {
                     "conformer_cnn_cache": cache["conformer_cnn_cache"][row : row + 1].detach().clone(),
                     "conformer_att_cache": cache["conformer_att_cache"][:, row : row + 1].detach().clone(),
-                    "estimator_cnn_cache": torch.cat(
-                        (
-                            cache["estimator_cnn_cache"][:, :, row : row + 1],
-                            cache["estimator_cnn_cache"][:, :, batch_size + row : batch_size + row + 1],
-                        ),
-                        dim=2,
-                    ).detach(),
-                    "estimator_att_cache": torch.cat(
-                        (
-                            cache["estimator_att_cache"][:, :, row : row + 1],
-                            cache["estimator_att_cache"][:, :, batch_size + row : batch_size + row + 1],
-                        ),
-                        dim=2,
-                    ).detach(),
+                    "estimator_cnn_cache": estimator_cnn_row,
+                    "estimator_att_cache": estimator_att_row,
                 }
             )
         return result
@@ -306,15 +343,24 @@ class BatchedToken2Wav(nn.Module):
     @staticmethod
     def _stack_flow_cache(states: list[BatchedToken2WavState]) -> dict[str, torch.Tensor]:
         flows = [state.flow_cache for state in states]
-        conditional_cnn = [flow["estimator_cnn_cache"][:, :, 0:1] for flow in flows]
-        unconditional_cnn = [flow["estimator_cnn_cache"][:, :, 1:2] for flow in flows]
-        conditional_att = [flow["estimator_att_cache"][:, :, 0:1] for flow in flows]
-        unconditional_att = [flow["estimator_att_cache"][:, :, 1:2] for flow in flows]
+        # Per-request estimator caches carry 2 rows (conditional+unconditional)
+        # under CFG and 1 row under the single-branch path (CFG disabled).
+        dual = flows[0]["estimator_cnn_cache"].shape[2] >= 2
+        if dual:
+            conditional_cnn = [flow["estimator_cnn_cache"][:, :, 0:1] for flow in flows]
+            unconditional_cnn = [flow["estimator_cnn_cache"][:, :, 1:2] for flow in flows]
+            estimator_cnn = torch.cat((*conditional_cnn, *unconditional_cnn), dim=2)
+            conditional_att = [flow["estimator_att_cache"][:, :, 0:1] for flow in flows]
+            unconditional_att = [flow["estimator_att_cache"][:, :, 1:2] for flow in flows]
+            estimator_att = torch.cat((*conditional_att, *unconditional_att), dim=2)
+        else:
+            estimator_cnn = torch.cat([flow["estimator_cnn_cache"] for flow in flows], dim=2)
+            estimator_att = torch.cat([flow["estimator_att_cache"] for flow in flows], dim=2)
         return {
             "conformer_cnn_cache": torch.cat([flow["conformer_cnn_cache"] for flow in flows], dim=0),
             "conformer_att_cache": torch.cat([flow["conformer_att_cache"] for flow in flows], dim=1),
-            "estimator_cnn_cache": torch.cat((*conditional_cnn, *unconditional_cnn), dim=2),
-            "estimator_att_cache": torch.cat((*conditional_att, *unconditional_att), dim=2),
+            "estimator_cnn_cache": estimator_cnn,
+            "estimator_att_cache": estimator_att,
         }
 
     def setup_batch(

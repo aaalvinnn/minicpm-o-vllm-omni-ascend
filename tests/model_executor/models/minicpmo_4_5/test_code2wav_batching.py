@@ -243,6 +243,39 @@ def test_adapter_runs_true_batch_cfg_and_splits_request_caches():
     assert cache1[0, 0, 0, 0, 0].item() == 20
 
 
+def test_adapter_single_branch_cfg_disabled_shapes_and_outputs():
+    # exp/cfg-single-branch (arm C): inference_cfg_rate == 0.0 elides the
+    # unconditional half-batch. The estimator must see one row per request
+    # (not two), caches stay single-row per request, and the velocity
+    # collapses to the conditional estimate (1.0 x marker, not 1.7 x marker).
+    token2wav = _FakeToken2Wav()
+    token2wav.flow.decoder.inference_cfg_rate = 0.0
+    adapter = BatchedToken2Wav(token2wav)
+    prompt = adapter.prepare_prompt("shared", "/fake/prompt.wav")
+    states = adapter.setup_batch(prompt, 2)
+    audios, states = adapter.decode_batch(
+        torch.tensor([[10, 11], [20, 21]]),
+        prompt,
+        states,
+        last_chunk=False,
+    )
+
+    assert token2wav.prompt_calls == 1
+    assert token2wav.flow.encoder.calls == [2, 2]
+    assert token2wav.flow.decoder.estimator.cfg_batches == [2, 2, 2, 2]
+    assert all(order == [1.0, 1.0] for order in token2wav.flow.decoder.estimator.speaker_order)
+    assert token2wav.hift.calls == [2]
+    assert len(audios) == 2
+    cache0 = states[0].flow_cache["estimator_cnn_cache"]
+    cache1 = states[1].flow_cache["estimator_cnn_cache"]
+    assert cache0.data_ptr() != cache1.data_ptr()
+    assert cache0[0, 0, 0, 0, 0].item() == 10
+    assert cache1[0, 0, 0, 0, 0].item() == 20
+    # Single branch: no CFG amplification (dual-branch test asserts 1.7 x).
+    torch.testing.assert_close(audios[0][0], torch.tensor(1.0 * 10))
+    torch.testing.assert_close(audios[1][0], torch.tensor(1.0 * 20))
+
+
 def test_fade_in_out_limits_overlap_to_available_previous_audio():
     speech = torch.arange(6, dtype=torch.float32).reshape(1, -1)
     previous = torch.full((1, 3), 2.0)
@@ -270,6 +303,36 @@ def test_estimator_cache_stack_split_round_trip_preserves_cfg_rows():
     stacked = adapter._stack_flow_cache(states)
     assert stacked["estimator_cnn_cache"].shape[2] == 4
     assert stacked["estimator_att_cache"].shape[2] == 4
+    restored = adapter._split_flow_cache(stacked, 2)
+    for original, round_tripped in zip(states, restored, strict=True):
+        torch.testing.assert_close(
+            round_tripped["estimator_cnn_cache"],
+            original.flow_cache["estimator_cnn_cache"],
+        )
+        torch.testing.assert_close(
+            round_tripped["estimator_att_cache"],
+            original.flow_cache["estimator_att_cache"],
+        )
+
+
+def test_estimator_cache_stack_split_round_trip_single_branch():
+    # CFG disabled: estimator caches carry one row per request; stack/split
+    # must round-trip without touching unconditional rows (which do not exist).
+    token2wav = _FakeToken2Wav()
+    token2wav.flow.decoder.inference_cfg_rate = 0.0
+    adapter = BatchedToken2Wav(token2wav)
+    prompt = adapter.prepare_prompt("shared", "/fake/prompt.wav")
+    states = adapter.setup_batch(prompt, 2)
+    _, states = adapter.decode_batch(
+        torch.tensor([[10, 11], [20, 21]]),
+        prompt,
+        states,
+        last_chunk=False,
+    )
+
+    stacked = adapter._stack_flow_cache(states)
+    assert stacked["estimator_cnn_cache"].shape[2] == 2
+    assert stacked["estimator_att_cache"].shape[2] == 2
     restored = adapter._split_flow_cache(stacked, 2)
     for original, round_tripped in zip(states, restored, strict=True):
         torch.testing.assert_close(

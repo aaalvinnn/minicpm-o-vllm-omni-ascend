@@ -776,3 +776,21 @@ class MiniCPMO45Code2Wav(nn.Module):
         finally:
             torch.set_default_dtype(previous_dtype)
         self.backend = BatchedToken2Wav(token2wav)
+        # Per-deploy CFG override (exp/cfg-single-branch): 0.0 makes the CFM
+        # velocity formula collapse to the conditional estimate (unconditional
+        # branch still computed, mathematically inert). None keeps the
+        # checkpoint/code default (0.7). `_decode_cfm` reads the attribute
+        # every step, so this override applies without touching the checkpoint.
+        cfg_rate = extra.get("token2wav_cfg_rate", None)
+        if cfg_rate is not None:
+            decoder = getattr(token2wav.flow, "decoder", None)
+            if decoder is None or not hasattr(decoder, "inference_cfg_rate"):
+                raise RuntimeError(
+                    "MiniCPMO45Code2WavBatchError "
+                    f'{{"reason":"no_inference_cfg_rate","configured":{cfg_rate}}}'
+                )
+            decoder.inference_cfg_rate = float(cfg_rate)
+            logger.info(
+                "[cfg-single-branch] token2wav_cfg_rate override applied: flow.decoder.inference_cfg_rate = %s",
+                decoder.inference_cfg_rate,
+            )

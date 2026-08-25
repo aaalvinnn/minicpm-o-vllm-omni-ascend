@@ -15,6 +15,9 @@ connectors:
       codec_chunk_frames: 25
       codec_left_context_frames: 3
       token2wav_n_timesteps: 3
+      # exp/cfg-single-branch (arm B): CFG off (velocity == conditional).
+      # None/omitted keeps the 0.7 default (arm A).
+      token2wav_cfg_rate: 0.0
 
 stages:
   - stage_id: 0
