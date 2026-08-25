@@ -125,20 +125,22 @@ def _coerce_int(value):
         return None
 
 
-def _codec_config(transfer_manager: Any) -> tuple[int, int]:
+def _codec_config(transfer_manager: Any) -> tuple[int, int, int]:
     connector = getattr(transfer_manager, "connector", None)
     raw_config = getattr(connector, "config", {}) or {}
     config = raw_config.get("extra", raw_config) if isinstance(raw_config, dict) else {}
     config = config if isinstance(config, dict) else {}
     chunk_frames = int(config.get("codec_chunk_frames", 25))
+    initial_chunk_frames = int(config.get("initial_codec_chunk_frames", chunk_frames))
     left_context_frames = int(config.get("codec_left_context_frames", 3))
-    if chunk_frames <= 0 or left_context_frames < 0:
+    if chunk_frames <= 0 or initial_chunk_frames <= 0 or left_context_frames < 0:
         raise ValueError(
             "Invalid MiniCPM-o codec chunk config: "
             f"codec_chunk_frames={chunk_frames}, "
+            f"initial_codec_chunk_frames={initial_chunk_frames}, "
             f"codec_left_context_frames={left_context_frames}"
         )
-    return chunk_frames, left_context_frames
+    return chunk_frames, initial_chunk_frames, left_context_frames
 
 
 def _codec_scalars(value: Any) -> list[int]:
@@ -289,16 +291,18 @@ def tts2code2wav_async_chunk(
         state["segment_text_recorded"] = True
     request_finished = getattr(request, "is_finished", None)
     finished = bool(is_finished or (callable(request_finished) and request_finished()))
-    chunk_frames, left_context_frames = _codec_config(transfer_manager)
+    chunk_frames, initial_chunk_frames, left_context_frames = _codec_config(transfer_manager)
+    is_initial_chunk = int(state.get("codec_end", 0)) == 0
+    target_frames = initial_chunk_frames if is_initial_chunk else chunk_frames
     flush_pending = finished
     last_chunk = bool(flush_pending and (not native_duplex or turn_end))
-    if not flush_pending and len(pending) < chunk_frames:
+    if not flush_pending and len(pending) < target_frames:
         return None
 
     hold_short_unit = (
         native_duplex and flush_pending and not last_chunk and 0 < len(pending) < _MINICPMO45_MIN_STREAM_BODY_FRAMES
     )
-    new_token_count = 0 if hold_short_unit else (len(pending) if flush_pending else chunk_frames)
+    new_token_count = 0 if hold_short_unit else (len(pending) if flush_pending else target_frames)
     new_codes = pending[:new_token_count]
     del pending[:new_token_count]
     codec_start = int(state["codec_end"])
