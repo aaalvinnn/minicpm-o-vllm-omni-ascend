@@ -106,7 +106,7 @@ platforms:
         compilation_config:
           # exp/fdo-stage1: PIECEWISE -> FULL_DECODE_ONLY (PIECEWISE is
           # neutralized by VLLM_USE_BREAKABLE_CUDAGRAPH=False -> eager).
-          cudagraph_mode: FULL_DECODE_ONLY
+          cudagraph_mode: FULL_AND_PIECEWISE
       - stage_id: 2
         # Stage 2 stays outer-eager and captures only exact-shape CFM DiT
         # estimator kernels through the NPU platform patch.
