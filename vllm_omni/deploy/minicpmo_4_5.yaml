@@ -12,7 +12,7 @@ connectors:
       connector_get_sleep_s: 0.001
       connector_get_max_wait_first_chunk: 3000
       connector_get_max_wait: 300
-      codec_chunk_frames: 50
+      codec_chunk_frames: 100
       initial_codec_chunk_frames: 8
       codec_left_context_frames: 3
       token2wav_n_timesteps: 3
@@ -112,4 +112,4 @@ platforms:
         # estimator kernels through the NPU platform patch.
         additional_config:
           code2wav_enable_npu_graph: true
-          code2wav_max_npu_graphs: 32
+          code2wav_max_npu_graphs: 64
