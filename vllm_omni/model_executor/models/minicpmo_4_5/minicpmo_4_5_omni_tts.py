@@ -28,6 +28,7 @@ from vllm.v1.sample.sampler import Sampler
 
 from vllm_omni.experimental.fullduplex.engine.intermediate import get_tts_handoff
 from vllm_omni.model_executor.models.output_templates import OmniOutput
+from vllm_omni.model_executor.models.minicpmo_4_5 import stage1_attribution
 from vllm_omni.platforms import current_omni_platform
 
 logger = init_logger(__name__)
@@ -390,36 +391,74 @@ class MiniCPMO45OmniTTSForConditionalGeneration(nn.Module, SupportsPP):
         request_id: str,
         step: int,
     ) -> torch.Tensor:
-        logits = self.head_code[0](hidden_state).float() / self._codec_temperature
-        eos_id = self._num_audio_tokens - 1
-        logits = _apply_repetition_penalty(
-            logits,
-            history,
-            penalty=self._codec_repetition_penalty,
-            window_size=_REPETITION_WINDOW,
+        sample = stage1_attribution.sample_begin(
+            request_id,
+            step,
+            int(history.numel()),
+            self._num_audio_tokens,
         )
-        request_states = getattr(self, "_request_audio_states", {})
-        state = request_states.get(request_id)
-        min_tokens = (
-            int(state.get("min_tokens", self._codec_min_tokens)) if isinstance(state, dict) else self._codec_min_tokens
-        )
-        if step < min_tokens:
-            logits[..., eos_id] = float("-inf")
-        # ``logits`` is freshly materialized above (head_code -> float -> penalty),
-        # so the warpers may mask it in place.
-        logits = _apply_top_k_top_p(
-            logits,
-            top_k=self._codec_top_k,
-            top_p=self._codec_top_p,
-            min_tokens_to_keep=3,
-            inplace=True,
-        )
-        probabilities = torch.softmax(logits, dim=-1)
-        return torch.multinomial(
-            probabilities,
-            num_samples=1,
-            generator=self._request_generator(request_id, probabilities.device),
-        ).reshape(())
+        try:
+            phase_start_ns = stage1_attribution.now_ns() if sample is not None else 0
+            logits = self.head_code[0](hidden_state).float() / self._codec_temperature
+            if sample is not None:
+                stage1_attribution.sample_phase(sample, "head_code", phase_start_ns, stage1_attribution.now_ns())
+
+            eos_id = self._num_audio_tokens - 1
+            phase_start_ns = stage1_attribution.now_ns() if sample is not None else 0
+            logits = _apply_repetition_penalty(
+                logits,
+                history,
+                penalty=self._codec_repetition_penalty,
+                window_size=_REPETITION_WINDOW,
+            )
+            if sample is not None:
+                stage1_attribution.sample_phase(sample, "repetition_penalty", phase_start_ns, stage1_attribution.now_ns())
+
+            request_states = getattr(self, "_request_audio_states", {})
+            state = request_states.get(request_id)
+            min_tokens = (
+                int(state.get("min_tokens", self._codec_min_tokens))
+                if isinstance(state, dict)
+                else self._codec_min_tokens
+            )
+            if step < min_tokens:
+                phase_start_ns = stage1_attribution.now_ns() if sample is not None else 0
+                logits[..., eos_id] = float("-inf")
+                if sample is not None:
+                    stage1_attribution.sample_phase(sample, "eos_mask", phase_start_ns, stage1_attribution.now_ns())
+
+            # ``logits`` is freshly materialized above (head_code -> float -> penalty),
+            # so the warpers may mask it in place.
+            phase_start_ns = stage1_attribution.now_ns() if sample is not None else 0
+            logits = _apply_top_k_top_p(
+                logits,
+                top_k=self._codec_top_k,
+                top_p=self._codec_top_p,
+                min_tokens_to_keep=3,
+                inplace=True,
+            )
+            if sample is not None:
+                stage1_attribution.sample_phase(sample, "top_k_top_p", phase_start_ns, stage1_attribution.now_ns())
+
+            phase_start_ns = stage1_attribution.now_ns() if sample is not None else 0
+            probabilities = torch.softmax(logits, dim=-1)
+            if sample is not None:
+                stage1_attribution.sample_phase(sample, "softmax", phase_start_ns, stage1_attribution.now_ns())
+
+            phase_start_ns = stage1_attribution.now_ns() if sample is not None else 0
+            sampled = torch.multinomial(
+                probabilities,
+                num_samples=1,
+                generator=self._request_generator(request_id, probabilities.device),
+            ).reshape(())
+            if sample is not None:
+                stage1_attribution.sample_phase(sample, "multinomial", phase_start_ns, stage1_attribution.now_ns())
+                sample.device_finish()
+                stage1_attribution.set_last_sample(sample)
+            return sampled
+        except BaseException:
+            stage1_attribution.sample_finish(sample)
+            raise
 
     def _step_constants(self, hidden: torch.Tensor):
         """Constant per-step tensors, cached per (device, dtype).
@@ -561,7 +600,13 @@ class MiniCPMO45OmniTTSForConditionalGeneration(nn.Module, SupportsPP):
                 codes = codes.to(device=hidden.device, dtype=torch.long).reshape(-1)
             step = int(state.get("step", 0))
             sampled = self._sample_audio_code(hidden[end - 1 : end], codes, request_id, step)
+            sampled_id_start_ns = stage1_attribution.now_ns()
             sampled_id = int(sampled.item())
+            stage1_attribution.sample_value_materialized(
+                stage1_attribution.take_last_sample(),
+                sampled_id_start_ns,
+                stage1_attribution.now_ns(),
+            )
             is_eos = sampled_id == self._num_audio_tokens - 1
             state["step"] = int(state.get("step", 0)) + 1
             reached_limit = int(state["step"]) >= int(state.get("max_tokens", 2048))

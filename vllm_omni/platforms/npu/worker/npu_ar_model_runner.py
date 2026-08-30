@@ -45,6 +45,7 @@ from vllm_omni.data_entry_keys import flatten_payload
 from vllm_omni.distributed.omni_connectors.kv_transfer_manager import OmniKVTransferManager
 from vllm_omni.distributed.omni_connectors.utils.config import get_stage_connector_role, stage_sends_async_output
 from vllm_omni.experimental.fullduplex.model_executor import DuplexSamplingRunnerMixin
+from vllm_omni.model_executor.models.minicpmo_4_5 import stage1_attribution
 from vllm_omni.outputs import OmniModelRunnerOutput
 from vllm_omni.platforms.npu.worker.npu_model_runner import OmniNPUModelRunner
 from vllm_omni.utils.mm_outputs import build_mm_cpu, partition_payload_list, to_payload_element
@@ -115,6 +116,7 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
         # Initialize KV cache manager (preserve vllm_config fallback behavior)
         self.kv_transfer_manager = OmniKVTransferManager.from_vllm_config(self.vllm_config, self.model_config)
         self._async_chunk = getattr(self.model_config, "async_chunk", False)
+        self._stage1_attribution_step = None
         _OMNI_CONNECTOR_INIT_ARCHS = {
             "Qwen3OmniMoeForConditionalGeneration",
             "Qwen2_5OmniForConditionalGeneration",
@@ -524,6 +526,15 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                 num_scheduled_tokens_np = np.array(tokens, dtype=np.int32)
                 max_num_scheduled_tokens = int(num_scheduled_tokens_np.max())
 
+                stage1_step = stage1_attribution.begin_decode_step(
+                    self,
+                    num_scheduled_tokens=num_scheduled_tokens_np,
+                    input_ids=None,
+                    inputs_embeds=None,
+                )
+                self._stage1_attribution_step = stage1_step
+                stage1_input_prepare_start_ns = stage1_attribution.now_ns()
+
                 (
                     logits_indices,
                     spec_decode_metadata,
@@ -663,6 +674,12 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                 intermediate_tensors,
             )
 
+            stage1_attribution.add_host_interval(
+                "runner_input_prepare",
+                stage1_input_prepare_start_ns,
+                stage1_attribution.now_ns(),
+            )
+
             #  -------------------------------------- Omni-new -------------------------------------------------
             if hasattr(self.model, "prepare_runner_inputs"):
                 input_ids, positions = self.model.prepare_runner_inputs(
@@ -733,9 +750,19 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                 ),
             ) as kv_connector_output,
         ):
-            hidden_states = self._model_forward(
-                num_tokens_padded, input_ids, positions, intermediate_tensors, inputs_embeds, **model_kwargs
+            stage1_step = self._stage1_attribution_step
+            stage1_attribution.update_step_metadata(
+                stage1_step,
+                input_ids_shape=list(getattr(input_ids, "shape", ())) if input_ids is not None else None,
+                inputs_embeds_shape=list(getattr(inputs_embeds, "shape", ())) if inputs_embeds is not None else None,
             )
+            stage1_attribution.body_begin()
+            try:
+                hidden_states = self._model_forward(
+                    num_tokens_padded, input_ids, positions, intermediate_tensors, inputs_embeds, **model_kwargs
+                )
+            finally:
+                stage1_attribution.body_end(stage1_step)
         with record_function_or_nullcontext("post process"):
             #  -------------------------------------- Omni-new -------------------------------------------------
             # [Omni] Map pending ropes metadata to req_ids.
@@ -802,12 +829,20 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                 sample_hidden_states = hidden_states[logits_indices]
                 #  -------------------------------------- Omni-new -------------------------------------------------
                 # Try with sampling_metadata first; fall back to without for models that don't support it
+                compute_logits_start_ns = stage1_attribution.now_ns()
                 try:
-                    logits = self.model.compute_logits(
-                        sample_hidden_states, sampling_metadata=self.input_batch.sampling_metadata
+                    try:
+                        logits = self.model.compute_logits(
+                            sample_hidden_states, sampling_metadata=self.input_batch.sampling_metadata
+                        )
+                    except TypeError:
+                        logits = self.model.compute_logits(sample_hidden_states)
+                finally:
+                    stage1_attribution.add_host_interval(
+                        "runner_compute_logits",
+                        compute_logits_start_ns,
+                        stage1_attribution.now_ns(),
                     )
-                except TypeError:
-                    logits = self.model.compute_logits(sample_hidden_states)
                 #  -------------------------------------- Omni-new -------------------------------------------------
             else:
                 # Rare case.
@@ -821,12 +856,20 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                     sample_hidden_states = hidden_states[logits_indices]
                     #  -------------------------------------- Omni-new -------------------------------------------------
                     # Try with sampling_metadata first; fall back to without for models that don't support it
+                    compute_logits_start_ns = stage1_attribution.now_ns()
                     try:
-                        logits = self.model.compute_logits(
-                            sample_hidden_states, sampling_metadata=self.input_batch.sampling_metadata
+                        try:
+                            logits = self.model.compute_logits(
+                                sample_hidden_states, sampling_metadata=self.input_batch.sampling_metadata
+                            )
+                        except TypeError:
+                            logits = self.model.compute_logits(sample_hidden_states)
+                    finally:
+                        stage1_attribution.add_host_interval(
+                            "runner_compute_logits",
+                            compute_logits_start_ns,
+                            stage1_attribution.now_ns(),
                         )
-                    except TypeError:
-                        logits = self.model.compute_logits(sample_hidden_states)
                     #  -------------------------------------- Omni-new -------------------------------------------------
 
                 model_output_broadcast_data: dict[str, Any] = {}
@@ -990,8 +1033,18 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
         #  -------------------------------------- Omni-new -------------------------------------------------
 
 
-        with record_function_or_nullcontext("sample_token"):
-            sampler_output = self._sample(logits, spec_decode_metadata)
+        sample_host_start_ns = stage1_attribution.now_ns()
+        try:
+            with record_function_or_nullcontext("sample_token"):
+                sampler_output = self._sample(logits, spec_decode_metadata)
+        finally:
+            stage1_attribution.add_host_interval(
+                "runner_sample",
+                sample_host_start_ns,
+                stage1_attribution.now_ns(),
+            )
+            stage1_attribution.finish_decode_step(self._stage1_attribution_step)
+            self._stage1_attribution_step = None
 
         if self.need_accepted_tokens:
             if self.sampling_done_event is None:

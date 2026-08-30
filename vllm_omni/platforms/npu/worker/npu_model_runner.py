@@ -21,6 +21,7 @@ from vllm_ascend.utils import enable_sp, lmhead_tp_enable
 from vllm_ascend.worker.model_runner_v1 import SEQ_LEN_WITH_MAX_PA_WORKSPACE
 
 from vllm_omni.model_executor.models.output_templates import OmniOutput
+from vllm_omni.model_executor.models.minicpmo_4_5 import stage1_attribution
 from vllm_omni.platforms.npu._310p import is_310p
 from vllm_omni.worker.gpu_model_runner import OmniGPUModelRunner
 
@@ -373,17 +374,32 @@ class OmniNPUModelRunner(OmniGPUModelRunner, NPUModelRunner):
         }
         run_model = partial(self.model, **model_inputs)
 
-        if self.enable_enpu:
-            # The soft segmentation scenario requires event.record first, then event.wait.
-            self._update_full_graph_params_if_needed(forward_context, num_tokens_padded, positions)
-            model_output = run_model()
-        else:
-            model_output = run_model()
-            self._update_full_graph_params_if_needed(forward_context, num_tokens_padded, positions)
+        stage1_step = stage1_attribution.current_step()
+        stage1_attribution.model_begin()
+        stage1_attribution.refresh_dispatch(stage1_step, self.model, prefix="context")
+        try:
+            if self.enable_enpu:
+                # The soft segmentation scenario requires event.record first, then event.wait.
+                self._update_full_graph_params_if_needed(forward_context, num_tokens_padded, positions)
+                model_output = run_model()
+            else:
+                model_output = run_model()
+                self._update_full_graph_params_if_needed(forward_context, num_tokens_padded, positions)
+        finally:
+            stage1_attribution.model_end(stage1_step)
+            stage1_attribution.refresh_dispatch(stage1_step, self.model, prefix="after")
 
         # Omni-specific: wrap output if needed
         if not isinstance(model_output, OmniOutput) and hasattr(self.model, "make_omni_output"):
-            model_output = self.model.make_omni_output(model_output, **model_kwargs, **model_kwargs_extra)
+            make_output_start_ns = stage1_attribution.now_ns()
+            try:
+                model_output = self.model.make_omni_output(model_output, **model_kwargs, **model_kwargs_extra)
+            finally:
+                stage1_attribution.add_host_interval(
+                    "runner_make_omni_output",
+                    make_output_start_ns,
+                    stage1_attribution.now_ns(),
+                )
 
         # Omni-specific: cache model output for later sample_tokens
         self._omni_last_model_output = model_output
