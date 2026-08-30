@@ -1,6 +1,7 @@
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,11 @@ class _Runner:
     def __init__(self, model=None):
         self.model_config = _TTSConfig()
         self.model = model if model is not None else object()
+        self.input_batch = SimpleNamespace(
+            req_ids=["req-1"],
+            num_computed_tokens_cpu=[2],
+        )
+        self.requests = {"req-1": SimpleNamespace(prompt_token_ids=[101, 102])}
 
 
 @pytest.fixture
@@ -96,9 +102,10 @@ def test_enabled_single_token_row_has_three_finite_p2_measurements(
 def test_ineligible_prefill_is_not_labeled_as_stage1_decode(enabled_attribution: Path) -> None:
     runner = _Runner()
 
+    runner.input_batch.num_computed_tokens_cpu = [0]
     assert stage1_attribution.begin_decode_step(
         runner,
-        num_scheduled_tokens=[2],
+        num_scheduled_tokens=[1],
         input_ids=None,
         inputs_embeds=None,
     ) is None
@@ -119,16 +126,37 @@ def test_ineligible_prefill_is_not_labeled_as_stage1_decode(enabled_attribution:
     assert not list(enabled_attribution.glob("stage1_pid*.jsonl"))
 
 
+def test_decode_step_requires_each_prompt_to_be_consumed(enabled_attribution: Path) -> None:
+    runner = _Runner()
+    runner.input_batch.num_computed_tokens_cpu = [1]
+
+    assert stage1_attribution.begin_decode_step(
+        runner,
+        num_scheduled_tokens=[1],
+        input_ids=None,
+        inputs_embeds=None,
+    ) is None
+    assert not list(enabled_attribution.glob("stage1_pid*.jsonl"))
+
+
 def test_boundary_markers_are_at_the_intended_source_spans() -> None:
     repo = Path("/vllm-workspace/vllm-omni")
     ar_source = (repo / "vllm_omni/platforms/npu/worker/npu_ar_model_runner.py").read_text()
     model_source = (repo / "vllm_omni/platforms/npu/worker/npu_model_runner.py").read_text()
 
     prepare_start = ar_source.index("stage1_input_prepare_start_ns =")
-    preprocess_call = ar_source.index(") = self._preprocess(", prepare_start)
-    input_marker = ar_source.index('"input_prepare_ms"', preprocess_call)
-    assert input_marker > preprocess_call
-    assert ar_source.count('"input_prepare_ms"') == 1
+    prepare_call = ar_source.index(") = self._prepare_inputs(", prepare_start)
+    preprocess_call = ar_source.index(") = self._preprocess(", prepare_call)
+    input_markers = []
+    search_from = prepare_call
+    while True:
+        marker = ar_source.find('"input_prepare_ms"', search_from)
+        if marker < 0:
+            break
+        input_markers.append(marker)
+        search_from = marker + 1
+    assert len(input_markers) == 2
+    assert prepare_call < input_markers[0] < preprocess_call < input_markers[1]
 
     adapt_start = ar_source.index("stage1_runner_adapt_start_ns")
     prepare_runner = ar_source.index("self.model.prepare_runner_inputs", adapt_start)

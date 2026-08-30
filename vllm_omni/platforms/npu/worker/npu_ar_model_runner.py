@@ -543,7 +543,12 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                     scheduler_output,
                     num_scheduled_tokens_np,
                 )
-
+                stage1_prepare_inputs_end_ns = stage1_attribution.now_ns()
+                stage1_attribution.add_host_interval(
+                    "input_prepare_ms",
+                    stage1_input_prepare_start_ns,
+                    stage1_prepare_inputs_end_ns,
+                )
                 num_tokens_unpadded = scheduler_output.total_num_scheduled_tokens
                 if self.pcp_size > 1:
                     num_tokens_unpadded = self.pcp_manager.total_num_sampled_tokens_pcp
@@ -659,6 +664,7 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                     cascade_attn_prefix_lens=cascade_attn_prefix_lens,
                 )
 
+            stage1_preprocess_start_ns = stage1_attribution.now_ns()
             (
                 input_ids,
                 inputs_embeds,
@@ -673,6 +679,12 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                 else total_num_scheduled_tokens,
                 intermediate_tensors,
             )
+            stage1_preprocess_end_ns = stage1_attribution.now_ns()
+            stage1_attribution.add_host_interval(
+                "input_prepare_ms",
+                stage1_preprocess_start_ns,
+                stage1_preprocess_end_ns,
+            )
 
             stage1_input_prepare_end_ns = stage1_attribution.now_ns()
             stage1_attribution.add_host_interval(
@@ -680,11 +692,7 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                 stage1_input_prepare_start_ns,
                 stage1_input_prepare_end_ns,
             )
-            stage1_attribution.add_host_interval(
-                "input_prepare_ms",
-                stage1_input_prepare_start_ns,
-                stage1_input_prepare_end_ns,
-            )
+
 
             #  -------------------------------------- Omni-new -------------------------------------------------
             stage1_runner_adapt_start_ns = stage1_attribution.now_ns()

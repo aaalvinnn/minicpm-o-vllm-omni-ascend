@@ -436,6 +436,30 @@ def current_step() -> _StepRecord | None:
     return getattr(_TLS, "step", None)
 
 
+def _all_requests_are_past_prompt(runner: Any, values: list[int]) -> bool:
+    """Require request metadata to prove this is decode, not one-token prefill."""
+    input_batch = getattr(runner, "input_batch", None)
+    req_ids = getattr(input_batch, "req_ids", None)
+    computed_tokens = getattr(input_batch, "num_computed_tokens_cpu", None)
+    requests = getattr(runner, "requests", None)
+    if req_ids is None or computed_tokens is None or not isinstance(requests, dict):
+        return False
+    try:
+        req_ids = list(req_ids)
+        if len(req_ids) != len(values):
+            return False
+        for index, req_id in enumerate(req_ids):
+            request = requests.get(req_id)
+            prompt_token_ids = getattr(request, "prompt_token_ids", None)
+            if prompt_token_ids is None:
+                return False
+            if int(computed_tokens[index]) < len(prompt_token_ids):
+                return False
+    except (IndexError, TypeError, ValueError):
+        return False
+    return True
+
+
 def begin_decode_step(runner: Any, *, num_scheduled_tokens: Any, input_ids: Any, inputs_embeds: Any) -> _StepRecord | None:
     """Create a record only for a Stage-1 all-decode runner invocation."""
     if not enabled():
@@ -452,6 +476,8 @@ def begin_decode_step(runner: Any, *, num_scheduled_tokens: Any, input_ids: Any,
     except Exception:
         return None
     if not values or any(value != 1 for value in values):
+        return None
+    if not _all_requests_are_past_prompt(runner, values):
         return None
 
     collector = get_collector()
