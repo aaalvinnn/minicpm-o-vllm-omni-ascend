@@ -87,21 +87,19 @@ def _apply_repetition_penalty(
     """Match MiniCPMTTS' frequency-aware repetition penalty."""
     if penalty == 1.0 or history.numel() == 0:
         return logits
-    recent = history.reshape(-1)[-window_size:]
+    recent = history.reshape(-1)[-window_size:].to(device=logits.device, dtype=torch.long)
     unique_tokens, counts = torch.unique(recent, return_counts=True)
-    unique_tokens = unique_tokens.to(device=logits.device, dtype=torch.long)
     alpha = torch.pow(
         torch.as_tensor(penalty, device=logits.device, dtype=logits.dtype),
-        counts.to(device=logits.device, dtype=logits.dtype),
+        counts.to(dtype=logits.dtype),
     )
-    out = logits.clone()
-    sel_logits = out[..., unique_tokens]
-    out[..., unique_tokens] = torch.where(
-        sel_logits < 0,
-        sel_logits * alpha,
-        sel_logits / alpha,
+    selected_logits = logits[..., unique_tokens]
+    logits[..., unique_tokens] = torch.where(
+        selected_logits < 0,
+        selected_logits * alpha,
+        selected_logits / alpha,
     )
-    return out
+    return logits
 
 
 def _apply_top_k_top_p(

@@ -13,6 +13,7 @@ from vllm_omni.model_executor.models.minicpmo_4_5.minicpmo_4_5_omni import (
 )
 from vllm_omni.model_executor.models.minicpmo_4_5.minicpmo_4_5_omni_tts import (
     MiniCPMO45OmniTTSForConditionalGeneration,
+    _apply_repetition_penalty,
     _max_audio_tokens,
     _restore_weight_norm_weight,
 )
@@ -71,6 +72,110 @@ def _routed(output, index: int):
         seq_len=2,
         scheduled_seq_len=2,
     )
+
+
+def test_repetition_penalty_is_bit_exact_and_updates_fresh_logits_in_place() -> None:
+    logits = torch.tensor([[2.0, -2.0, 3.0, -3.0, 4.0]], dtype=torch.float32)
+    original = logits.clone()
+    history = torch.tensor([2, 2, 1, 2], dtype=torch.long)
+    penalty = 1.05
+
+    result = _apply_repetition_penalty(
+        logits,
+        history,
+        penalty=penalty,
+        window_size=3,
+    )
+
+    expected = original.clone()
+    frequencies = torch.bincount(history[-3:], minlength=expected.shape[-1]).to(dtype=expected.dtype)
+    alpha = torch.pow(torch.as_tensor(penalty, dtype=expected.dtype), frequencies)
+    expected = torch.where(expected < 0, expected * alpha, expected / alpha)
+
+    assert result is logits
+    torch.testing.assert_close(result, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    ("history", "penalty"),
+    [
+        (torch.empty(0, dtype=torch.long), 1.05),
+        (torch.tensor([1, 1, 1], dtype=torch.long), 1.0),
+    ],
+)
+def test_repetition_penalty_handles_empty_window_and_penalty_one(
+    history: torch.Tensor,
+    penalty: float,
+) -> None:
+    logits = torch.tensor([[1.0, -1.0, 2.0, -2.0]], dtype=torch.float32)
+    original = logits.clone()
+
+    result = _apply_repetition_penalty(
+        logits,
+        history,
+        penalty=penalty,
+        window_size=2,
+    )
+
+    assert result is logits
+    torch.testing.assert_close(result, original, rtol=0, atol=0)
+
+
+def test_repetition_penalty_accepts_non_long_history_and_respects_window() -> None:
+    logits = torch.tensor([[1.0, -1.0, 2.0, -2.0]], dtype=torch.float32)
+    original = logits.clone()
+    history = torch.tensor([1, 2, 3, 1, 2], dtype=torch.int32)
+
+    result = _apply_repetition_penalty(
+        logits,
+        history,
+        penalty=1.05,
+        window_size=2,
+    )
+
+    recent = history[-2:].to(dtype=torch.long)
+    frequencies = torch.bincount(recent, minlength=original.shape[-1]).to(dtype=original.dtype)
+    alpha = torch.pow(torch.as_tensor(1.05, dtype=original.dtype), frequencies)
+    expected = torch.where(original < 0, original * alpha, original / alpha)
+
+    assert result is logits
+    torch.testing.assert_close(result, expected, rtol=0, atol=0)
+
+
+def test_repetition_penalty_keeps_eos_mask_applied_after_penalty(monkeypatch) -> None:
+    import vllm_omni.model_executor.models.minicpmo_4_5.minicpmo_4_5_omni_tts as tts_module
+
+    talker = _make_talker()
+    talker._codec_temperature = 1.0
+    talker._codec_repetition_penalty = 1.05
+    talker._codec_top_k = None
+    talker._codec_top_p = None
+    talker._codec_seed = 42
+    talker._num_audio_tokens = 4
+    talker._request_audio_states = {"req-eos": {"min_tokens": 50}}
+
+    class _Head:
+        def __call__(self, _hidden_state):
+            return torch.tensor([[1.0, -1.0, 2.0, 3.0]])
+
+    captured = []
+
+    def capture(logits, **_kwargs):
+        captured.append(logits.clone())
+        return logits
+
+    talker.head_code = [_Head()]
+    monkeypatch.setattr(tts_module, "_apply_top_k_top_p", capture)
+
+    talker._sample_audio_code(
+        torch.zeros(1, 1),
+        torch.tensor([0, 1], dtype=torch.long),
+        "req-eos",
+        step=0,
+    )
+
+    assert len(captured) == 1
+    assert captured[0][0, 3].item() == float("-inf")
 
 
 @pytest.mark.parametrize(
