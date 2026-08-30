@@ -674,13 +674,20 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
                 intermediate_tensors,
             )
 
+            stage1_input_prepare_end_ns = stage1_attribution.now_ns()
             stage1_attribution.add_host_interval(
                 "runner_input_prepare",
                 stage1_input_prepare_start_ns,
-                stage1_attribution.now_ns(),
+                stage1_input_prepare_end_ns,
+            )
+            stage1_attribution.add_host_interval(
+                "input_prepare_ms",
+                stage1_input_prepare_start_ns,
+                stage1_input_prepare_end_ns,
             )
 
             #  -------------------------------------- Omni-new -------------------------------------------------
+            stage1_runner_adapt_start_ns = stage1_attribution.now_ns()
             if hasattr(self.model, "prepare_runner_inputs"):
                 input_ids, positions = self.model.prepare_runner_inputs(
                     input_ids=input_ids,
@@ -695,6 +702,12 @@ class NPUARModelRunner(OmniNPUModelRunner, OmniConnectorModelRunnerMixin, Duplex
 
             # update global cos, sin
             update_cos_sin(positions)
+            stage1_runner_adapt_end_ns = stage1_attribution.now_ns()
+            stage1_attribution.add_host_interval(
+                "runner_adapt_ms",
+                stage1_runner_adapt_start_ns,
+                stage1_runner_adapt_end_ns,
+            )
 
         if self.dynamic_eplb:
             with record_function_or_nullcontext("EPLB weight D2D"):

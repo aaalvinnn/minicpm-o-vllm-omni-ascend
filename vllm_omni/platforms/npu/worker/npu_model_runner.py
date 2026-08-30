@@ -390,8 +390,9 @@ class OmniNPUModelRunner(OmniGPUModelRunner, NPUModelRunner):
             stage1_attribution.refresh_dispatch(stage1_step, self.model, prefix="after")
 
         # Omni-specific: wrap output if needed
+        output_state_start_ns = stage1_attribution.now_ns()
         if not isinstance(model_output, OmniOutput) and hasattr(self.model, "make_omni_output"):
-            make_output_start_ns = stage1_attribution.now_ns()
+            make_output_start_ns = output_state_start_ns
             try:
                 model_output = self.model.make_omni_output(model_output, **model_kwargs, **model_kwargs_extra)
             finally:
@@ -403,6 +404,11 @@ class OmniNPUModelRunner(OmniGPUModelRunner, NPUModelRunner):
 
         # Omni-specific: cache model output for later sample_tokens
         self._omni_last_model_output = model_output
+        stage1_attribution.add_host_interval(
+            "output_state_ms",
+            output_state_start_ns,
+            stage1_attribution.now_ns(),
+        )
 
         # NPU-specific: all-gather for sequence parallelism
         if forward_context.flash_comm_v1_enabled and not isinstance(model_output, IntermediateTensors):
