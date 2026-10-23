@@ -56,6 +56,18 @@ Stage 1 的 Talker 采样 host 快路径来自上游 PR #5945，已包含在基�
 - CFM 宏图、Stage 2 双流重叠：微基准否决。
 - Talker RepPen 稀疏化：局部 P50 提速 14%，但 5 对同日 A/B 的配对 bootstrap 95% CI 跨过 0，端到端未脱离噪声，止损不合入。
 
+## 实验分支（未合入 main）
+
+0827 提交之后继续做的尝试，都基于当前 `main`，保留下来作为工作记录。
+
+| 分支 | 内容 | 结论 |
+|---|---|---|
+| `exp/opt-talker-reppen` | Talker 重复惩罚：`bincount` 全词表改为 `unique` + 稀疏更新，再改为原位更新 | 局部 P50 −14%，完整 sampling P50 −9%；5 对同日 A/B 的 95% CI 跨过 0，端到端未稳定脱离噪声，止损 |
+| `exp/opt-chunk-8-100` | 稳态 chunk 50 → 100（8/100 两 chunk 模式） | 实验分支，未合入 |
+| `exp/opt-chunk8-100-v2` | 在上一项基础上把 graph pool 32 → 64，修复 shape 耗尽 | 实验分支，未合入 |
+| `exp/opt-combo-c100-reppen` | 上面 chunk 100 与 RepPen 稀疏化的组合 | 实验分支，未合入 |
+| `exp/p2-stage1-boundary-attribution` | Stage 1 runner / output 边界的耗时归因打点 | `input_prepare` 约 1.2 ms、`output_state` 约 1.5 ms，但没找到能在保持语义的前提下直接删除的冗余操作，结论为 Stop；`runner_adapt` 仅 0.007 ms |
+
 ## 关键配置
 
 全部在 [`vllm_omni/deploy/minicpmo_4_5.yaml`](vllm_omni/deploy/minicpmo_4_5.yaml)：
