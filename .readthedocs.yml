@@ -1,0 +1,29 @@
+# Read the Docs configuration file
+# See https://docs.readthedocs.io/en/stable/config-file/v2.html for details
+
+version: 2
+
+build:
+  os: ubuntu-22.04
+  tools:
+    python: "3.12"
+  jobs:
+    post_checkout:
+      - git fetch --unshallow || true
+    pre_install:
+      # Pre-install CPU torch so the subsequent `pip install .[docs]` does not
+      # pull ~2 GB of CUDA 13 libs (cuBLAS/cuDNN/NCCL/...) that exceed RTD's
+      # 1 GB memory cap and time out the mkdocs build.
+      - python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
+
+mkdocs:
+  configuration: mkdocs.yml
+  fail_on_warning: true
+
+# Optionally declare the Python requirements required to build your docs
+python:
+  install:
+    - method: pip
+      path: .
+      extra_requirements:
+        - docs

@@ -1,0 +1,140 @@
+nav:
+- Home: README.md
+- User Guide:
+  - Getting Started:
+    - getting_started/quickstart.md
+    - getting_started/installation/*
+  - Serving:
+    - OpenAI-Compatible API:
+      - Chat Completions API: serving/chat_completions_api.md
+      - Image Generation: serving/image_generation_api.md
+      - Image Edit: serving/image_edit_api.md
+      - Text to Speech: serving/speech_api.md
+      - Videos: serving/videos_api.md
+      - Audio Generation: serving/audio_generate_api.md
+      - Streaming Video Input: serving/video_stream_api.md
+  - Examples:
+    - examples/README.md
+    - Offline Inference:
+      - GLM-Image Multistage End-to-End Inference: user_guide/examples/offline_inference/glm_image.md
+      - HunyuanImage-3.0 Image-to-Text Inference: user_guide/examples/offline_inference/hunyuan_image3.md
+      - Image-To-Image: user_guide/examples/offline_inference/image_to_image.md
+      - Image-To-Video: user_guide/examples/offline_inference/image_to_video.md
+      - InternVLA-A1: user_guide/examples/offline_inference/internvla_a1.md
+      - MiMo-Audio: user_guide/examples/offline_inference/mimo_audio.md
+      - Qwen2.5-Omni: user_guide/examples/offline_inference/qwen2_5_omni.md
+      - Qwen3-Omni: user_guide/examples/offline_inference/qwen3_omni.md
+      - Text-To-Audio: user_guide/examples/offline_inference/text_to_audio.md
+      - Text-To-Image: user_guide/examples/offline_inference/text_to_image.md
+      - Text-To-Speech: user_guide/examples/offline_inference/text_to_speech.md
+      - Text-To-Video: user_guide/examples/offline_inference/text_to_video.md
+      - X-To-Video-Audio: user_guide/examples/offline_inference/x_to_video_audio.md
+    - Online Serving:
+      - BAGEL-7B-MoT: user_guide/examples/online_serving/bagel.md
+      - vLLM-Omni Helm Chart: user_guide/examples/online_serving/chart-helm.md
+      - Diffusers Backend Adapter: user_guide/examples/online_serving/diffusers_pipeline_adapter.md
+      - GLM-Image Online Serving: user_guide/examples/online_serving/glm_image.md
+      - Image-To-Image: user_guide/examples/online_serving/image_to_image.md
+      - Image-To-Video: user_guide/examples/online_serving/image_to_video.md
+      - MiMo-Audio: user_guide/examples/online_serving/mimo_audio.md
+      - Qwen2.5-Omni: user_guide/examples/online_serving/qwen2_5_omni.md
+      - Qwen3-Omni: user_guide/examples/online_serving/qwen3_omni.md
+      - Text-To-Speech: user_guide/examples/online_serving/text_to_speech.md
+      - Text-To-Image: user_guide/examples/online_serving/text_to_image.md
+      - Text-To-Video: user_guide/examples/online_serving/text_to_video.md
+  - General:
+    - usage/*
+  - Configuration:
+    - configuration/README.md
+    - configuration/*
+  - Models:
+    - models/supported_models.md
+  - Features:
+    - Sleep Mode: features/sleep_mode.md
+    - Diffusion Features:
+      - Overview: user_guide/diffusion_features.md
+      - Feature Compatibility: user_guide/feature_compatibility.md
+      - Regional Compilation: user_guide/diffusion/regional_compilation.md
+      - Cache Acceleration:
+        - TeaCache: user_guide/diffusion/cache_acceleration/teacache.md
+        - Cache-DiT: user_guide/diffusion/cache_acceleration/cache_dit.md
+      - Attention Backends: user_guide/diffusion/attention_backends.md
+      - Frame Interpolation: user_guide/diffusion/frame_interpolation.md
+      - Parallelism:
+        - Overview: user_guide/diffusion/parallelism/overview.md
+        - CFG Parallel: user_guide/diffusion/parallelism/cfg_parallel.md
+        - Expert Parallel: user_guide/diffusion/parallelism/expert_parallel.md
+        - Hybrid Sharded Data Parallel: user_guide/diffusion/parallelism/hsdp.md
+        - Sequence Parallel: user_guide/diffusion/parallelism/sequence_parallel.md
+        - Tensor Parallel: user_guide/diffusion/parallelism/tensor_parallel.md
+        - VAE Parallelism: user_guide/diffusion/parallelism/vae_parallelism.md
+      - CPU Offloading: user_guide/diffusion/cpu_offload_diffusion.md
+      - LoRA: user_guide/diffusion/lora.md
+      - Custom Pipeline: features/custom_pipeline.md
+      - Request-Level Batching: user_guide/diffusion/request_batching.md
+      - Step Execution: user_guide/diffusion/step_execution.md
+    - Quantization:
+      - Overview: user_guide/quantization/overview.md
+      - Online Quantization: user_guide/quantization/online.md
+      - Quantized KV Cache: user_guide/quantization/quantized_kvcache.md
+      - FP8 W8A8: user_guide/quantization/fp8.md
+      - Int8 W8A8: user_guide/quantization/int8.md
+      - BitsAndBytes W4: user_guide/quantization/bitsandbytes.md
+      - MXFP8 W8A8: user_guide/quantization/mxfp8.md
+      - MXFP4 W4A4: user_guide/quantization/mxfp4.md
+      - ModelOpt: user_guide/quantization/modelopt.md
+      - GGUF: user_guide/quantization/gguf.md
+      - AutoRound: user_guide/quantization/autoround.md
+      - msModelSlim: user_guide/quantization/msmodelslim.md
+    - ComfyUI: features/comfyui.md
+  - Fault Tolerance:
+    - Failure Modes: user_guide/fault_injection_reliability_matrix.md
+- Developer Guide:
+  - General:
+    - contributing/README.md
+    - glob: contributing/*
+      flatten_single_child_sections: true
+  - Model Implementation:
+    - contributing/model/README.md
+    - contributing/model/adding_omni_model.md
+    - contributing/model/adding_tts_model.md
+    - contributing/model/adding_diffusion_model.md
+  - CI: contributing/ci
+  - Design Documents:
+    - design/index.md
+    - design/architecture_overview.md
+    - Feature Design:
+      - design/feature/disaggregated_inference.md
+      - design/feature/ray_based_execution.md
+      - design/feature/omni_connectors/
+      - design/feature/prefix_caching.md
+      - design/feature/cfg_parallel.md
+      - design/feature/expert_parallel.md
+      - design/feature/sequence_parallel.md
+      - design/feature/tensor_parallel.md
+      - design/feature/vae_parallel.md
+      - design/feature/hsdp.md
+      - design/feature/cache_dit.md
+      - design/feature/teacache.md
+      - design/feature/skip_softmax.md
+      - design/feature/async_chunk.md
+      - design/feature/vae_parallel.md
+      - design/feature/diffusion_step_execution.md
+      - design/feature/diffusion_request_level_batching.md
+      - design/feature/diffusion_continuous_batching.md
+    - Module Design:
+      - design/module/ar_module.md
+      - design/module/dit_module.md
+      - design/module/entrypoint_module.md
+      - design/module/async_omni_architecture.md
+  - Docs Guide: contributing/DOCS_GUIDE.md
+- API Reference:
+  - api/README.md
+  - api/vllm_omni
+- CLI Reference: cli
+- Community:
+  - Governance: community/governance.md
+  - community/*
+  - Slack: https://slack.vllm.ai
+  - Blog: https://blog.vllm.ai
+  - Forum: https://discuss.vllm.ai
